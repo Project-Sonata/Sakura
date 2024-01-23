@@ -2,7 +2,7 @@ from json import loads
 
 from kafka import KafkaConsumer
 
-from sakura.audio_cutter import AudioCutter
+from sakura.nino.audio_cutter import AudioCutter
 
 consumer = KafkaConsumer("albums-event-warehouse",
                          bootstrap_servers=['localhost:29092'],
