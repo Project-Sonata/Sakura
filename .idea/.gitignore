@@ -9,3 +9,6 @@
 ../untitled.iml
 ../.idea/**
 misc.xml
+modules.xml
+inspectionProfiles/**
+vcs.xml
