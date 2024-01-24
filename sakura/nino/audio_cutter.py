@@ -17,6 +17,17 @@ class AudioCutter:
 
         cut_audio.export(output)
 
+    def cut_from_local_file_and_return_bytes(self, path, start, end):
+        audio = AudioSegment.from_file(path)
+
+        cut_audio = audio[start:end]
+
+        bytes_to_return = BytesIO()
+
+        cut_audio.export(bytes_to_return)
+
+        return bytes_to_return
+
     def cut_from_web(self, url, output, start, end):
         response = requests.get(url)
         content_bytes = response.content
