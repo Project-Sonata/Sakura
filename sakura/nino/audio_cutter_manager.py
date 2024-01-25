@@ -3,7 +3,8 @@ import logging
 import os
 import time
 from json import loads
-from kafka import KafkaConsumer, KafkaProducer
+from kafka import KafkaConsumer, KafkaProducer, TopicPartition, OffsetAndMetadata
+from concurrent.futures import ThreadPoolExecutor
 
 import uuid
 import logging as logger
@@ -23,6 +24,7 @@ CLOUDFRONT_HOST = os.environ.get("file_host_prefix")
 
 cutter = AudioCutter()
 logging.getLogger().setLevel(logging.INFO)
+executor = ThreadPoolExecutor(max_workers=28, thread_name_prefix="[nino-mp3]")
 
 s3Uploader = S3Uploader(
     client_id=os.environ.get("aws_client_id"),
@@ -30,6 +32,7 @@ s3Uploader = S3Uploader(
     bucket_name=os.environ.get("aws_s3_bucket_name"),
     bucket_region=os.environ.get("aws_s3_bucket_region")
 )
+
 
 consumer = KafkaConsumer("albums-event-warehouse",
                          bootstrap_servers=['localhost:29092'],
@@ -54,46 +57,60 @@ headers = [
     ("content_type", bytes("application/json", encoding="UTF-8"))
 ]
 
+
+def process_single_track(track, album):
+    start_time = time.time()
+
+    track_uri = track.get('uri', None)
+
+    if track_uri is None:
+        logger.warning(f"Null track uri in event. {track}")
+        return
+
+    start_cut_track_position = TEN_SECONDS
+    end_cut_track_position = FORTY_SECONDS
+
+    logger.info(f"Starting to cut the {track_uri}. "
+                f"Time window is: {end_cut_track_position - start_cut_track_position}"
+                f"Start position is: {start_cut_track_position}, end position is {end_cut_track_position}")
+
+    bytesIO = cutter.cut_from_web_and_return_bytes(track_uri, start_cut_track_position, end_cut_track_position)
+
+    key = "m/previews/" + uuid.uuid4().hex.upper()[0:22]
+    logger.debug("Generated key for preview: ", key)
+
+    s3Uploader.uploadFile(key, bytesIO, "audio/mp3")
+
+    end_processing_time = time.time()
+
+    logger.info(f"Successfully cut and uploaded mp3 preview for {track_uri}"
+                f" Started at {start_time}, ended at {end_processing_time},"
+                f" total processing time for the given record is {end_processing_time - start_time}")
+
+    body = {"track_id": track.get("id"), "album_id": album.get("id"), "preview_url": CLOUDFRONT_HOST + key}
+
+    logger.info(f"Generated the event body on successful processing. Sending the event to kafka, payload: {body}")
+
+    producer.send(topic="album-events-warehouse", value=body, headers=headers)
+
+
+def handle_event(msg):
+    topic_partition = TopicPartition("albums-event-warehouse", msg.partition)
+    offset = OffsetAndMetadata(msg.offset + 1, None)
+    topic_offset = {topic_partition: offset}
+
+    event_body = msg.value.get('body', {})
+    tracks = event_body.get('uploadedTracks', {}).get('items', [{}])
+
+    for track in tracks:
+        executor.submit(
+            process_single_track(track, event_body)
+        ).add_done_callback(lambda f: consumer.commit(topic_offset))
+
+
 for message in consumer:
     try:
-        start_time = time.time()
-        event_body = message.value.get('body', {})
-        tracks = event_body.get('uploadedTracks', {}).get('items', [{}])
-
-        for track in tracks:
-            track_uri = track.get('uri', None)
-
-            logger.debug(message)
-
-            if track_uri is None:
-                logger.warning(f"Null track uri in event. {message}")
-                continue
-
-            start_cut_track_position = TEN_SECONDS
-            end_cut_track_position = FORTY_SECONDS
-
-            logger.info(f"Starting to cut the {track_uri}. "
-                        f"Time window is: {end_cut_track_position - start_cut_track_position}"
-                        f"Start position is: {start_cut_track_position}, end position is {end_cut_track_position}")
-
-            bytesIO = cutter.cut_from_web_and_return_bytes(track_uri, start_cut_track_position, end_cut_track_position)
-
-            key = "m/previews/" + uuid.uuid4().hex.upper()[0:22]
-            logger.debug("Generated key for preview: ", key)
-
-            s3Uploader.uploadFile(key, bytesIO, "audio/mp3")
-
-            end_processing_time = time.time()
-
-            logger.info(f"Successfully cut and uploaded mp3 preview for {track_uri}"
-                        f" Started at {start_time}, ended at {end_processing_time},"
-                        f" total processing time for the given record is {end_processing_time - start_cut_track_position}")
-
-            body = {"track_id": track.get("id"), "album_id": event_body.get("id"), "preview_url": CLOUDFRONT_HOST + key}
-
-            logger.info(f"Generated the event body on successful processing. Sending the event to kafka, payload: {body}")
-
-            producer.send(topic="album-events-warehouse", value=body, headers=headers)
+        executor.submit(handle_event(message))
 
     except Exception as ex:
         logger.error("Failed to process the following record: ", message, ex)
