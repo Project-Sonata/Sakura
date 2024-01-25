@@ -41,7 +41,10 @@ class AudioCutter:
         response = requests.get(url)
         content_bytes = response.content
 
-        audio = AudioSegment.from_file(BytesIO(content_bytes))
+        return self.cut_from_bytes_and_return_bytes(BytesIO(content_bytes), start, end)
+
+    def cut_from_bytes_and_return_bytes(self, bytes_io: BytesIO, start, end):
+        audio = AudioSegment.from_file(bytes_io)
 
         cut_audio = audio[start:end]
 
