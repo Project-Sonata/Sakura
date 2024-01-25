@@ -58,40 +58,42 @@ for message in consumer:
     try:
         start_time = time.time()
         event_body = message.value.get('body', {})
-        track = event_body.get('uploadedTracks', {}).get('items', [{}])[0]
-        track_uri = track.get('uri', None)
+        tracks = event_body.get('uploadedTracks', {}).get('items', [{}])
 
-        logger.debug(message)
+        for track in tracks:
+            track_uri = track.get('uri', None)
 
-        if track_uri is None:
-            logger.warning(f"Null track uri in event. {message}")
-            continue
+            logger.debug(message)
 
-        start_cut_track_position = TEN_SECONDS
-        end_cut_track_position = FORTY_SECONDS
+            if track_uri is None:
+                logger.warning(f"Null track uri in event. {message}")
+                continue
 
-        logger.info(f"Starting to cut the {track_uri}. "
-                    f"Time window is: {end_cut_track_position - start_cut_track_position}"
-                    f"Start position is: {start_cut_track_position}, end position is {end_cut_track_position}")
+            start_cut_track_position = TEN_SECONDS
+            end_cut_track_position = FORTY_SECONDS
 
-        bytesIO = cutter.cut_from_web_and_return_bytes(track_uri, start_cut_track_position, end_cut_track_position)
+            logger.info(f"Starting to cut the {track_uri}. "
+                        f"Time window is: {end_cut_track_position - start_cut_track_position}"
+                        f"Start position is: {start_cut_track_position}, end position is {end_cut_track_position}")
 
-        key = "m/previews/" + uuid.uuid4().hex.upper()[0:22]
-        logger.debug("Generated key for preview: ", key)
+            bytesIO = cutter.cut_from_web_and_return_bytes(track_uri, start_cut_track_position, end_cut_track_position)
 
-        s3Uploader.uploadFile(key, bytesIO, "audio/mp3")
+            key = "m/previews/" + uuid.uuid4().hex.upper()[0:22]
+            logger.debug("Generated key for preview: ", key)
 
-        end_processing_time = time.time()
+            s3Uploader.uploadFile(key, bytesIO, "audio/mp3")
 
-        logger.info(f"Successfully cut and uploaded mp3 preview for {track_uri}"
-                    f"Started at {start_time}, ended at {end_processing_time},"
-                    f" total processing time for the given record is {end_processing_time - start_cut_track_position}")
+            end_processing_time = time.time()
 
-        body = {"track_id": track.get("id"), "album_id": event_body.get("id"), "preview_url": CLOUDFRONT_HOST + key}
+            logger.info(f"Successfully cut and uploaded mp3 preview for {track_uri}"
+                        f" Started at {start_time}, ended at {end_processing_time},"
+                        f" total processing time for the given record is {end_processing_time - start_cut_track_position}")
 
-        logger.info(f"Generated the event body on successful processing. Sending the event to kafka, payload: {body}")
+            body = {"track_id": track.get("id"), "album_id": event_body.get("id"), "preview_url": CLOUDFRONT_HOST + key}
 
-        producer.send(topic="album-events-warehouse", value=body, headers=headers)
+            logger.info(f"Generated the event body on successful processing. Sending the event to kafka, payload: {body}")
+
+            producer.send(topic="album-events-warehouse", value=body, headers=headers)
 
     except Exception as ex:
         logger.error("Failed to process the following record: ", message, ex)
