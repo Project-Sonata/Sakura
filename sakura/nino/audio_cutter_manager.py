@@ -1,7 +1,9 @@
+import json
+import logging
 import os
 import time
 from json import loads
-from kafka import KafkaConsumer
+from kafka import KafkaConsumer, KafkaProducer
 
 import uuid
 import logging as logger
@@ -17,7 +19,10 @@ FORTY_SECONDS = 40 * 1000
 
 TEN_SECONDS = 10 * 1000
 
+CLOUDFRONT_HOST = os.environ.get("file_host_prefix")
+
 cutter = AudioCutter()
+logging.getLogger().setLevel(logging.INFO)
 
 s3Uploader = S3Uploader(
     client_id=os.environ.get("aws_client_id"),
@@ -33,16 +38,34 @@ consumer = KafkaConsumer("albums-event-warehouse",
                          group_id='my-group123',
                          value_deserializer=lambda x: loads(x.decode('utf-8')))
 
+
+def serializer(msg):
+    return json.dumps(msg).encode('utf-8')
+
+
+# Kafka Producer
+producer = KafkaProducer(
+    bootstrap_servers=['localhost:29092'],
+    value_serializer=serializer
+)
+
+headers = [
+    ("event_type", bytes("mp3_preview_generated", encoding="UTF-8")),
+    ("content_type", bytes("application/json", encoding="UTF-8"))
+]
+
 for message in consumer:
     try:
         start_time = time.time()
-
-        track = message.value.get('body', {}).get('uploadedTracks', {}).get('items', [{}])[0]
+        event_body = message.value.get('body', {})
+        track = event_body.get('uploadedTracks', {}).get('items', [{}])[0]
         track_uri = track.get('uri', None)
 
+        logger.debug(message)
+
         if track_uri is None:
-            logger.warning("Null track uri in event.", message)
-            pass
+            logger.warning(f"Null track uri in event. {message}")
+            continue
 
         start_cut_track_position = TEN_SECONDS
         end_cut_track_position = FORTY_SECONDS
@@ -63,6 +86,12 @@ for message in consumer:
         logger.info(f"Successfully cut and uploaded mp3 preview for {track_uri}"
                     f"Started at {start_time}, ended at {end_processing_time},"
                     f" total processing time for the given record is {end_processing_time - start_cut_track_position}")
+
+        body = {"track_id": track.get("id"), "album_id": event_body.get("id"), "preview_url": CLOUDFRONT_HOST + key}
+
+        logger.info(f"Generated the event body on successful processing. Sending the event to kafka, payload: {body}")
+
+        producer.send(topic="album-events-warehouse", value=body, headers=headers)
 
     except Exception as ex:
         logger.error("Failed to process the following record: ", message, ex)
