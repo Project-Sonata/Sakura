@@ -11,6 +11,7 @@ from kafka import KafkaConsumer, KafkaProducer, TopicPartition, OffsetAndMetadat
 
 from sakura.core.S3Uploader import S3Uploader
 from sakura.nino.Mp3PreviewGeneratorAudioProcessor import Mp3PreviewGeneratorAudioProcessor
+from sakura.nino.TrackDurationResolverAudioProcessor import TrackDurationResolverAudioProcessor
 from sakura.nino.audio_cutter import AudioCutter
 
 # Simple script that just listen to events from kafka,
@@ -44,7 +45,9 @@ producer = KafkaProducer(
     value_serializer=serializer
 )
 # Chain that will be called to handle the given track
-audio_processors = [Mp3PreviewGeneratorAudioProcessor(s3Uploader, producer)]
+audio_processors = [
+    Mp3PreviewGeneratorAudioProcessor(s3Uploader, producer),
+    TrackDurationResolverAudioProcessor(producer)]
 
 
 def handle_event(msg):
@@ -69,15 +72,16 @@ def handle_event(msg):
                            f" actual status code is: {response.status_code}")
             continue
 
-        bytes_content = BytesIO(response.content)
+        def on_complete():
+            consumer.commit(topic_offset)
 
         for audio_processor in audio_processors:
             try:
 
                 logger.info(f"Process the audio track: {track_uri} with {audio_processor.__str__()}")
                 executor.submit(
-                    lambda: audio_processor.process_audio_files(bytes_content, track, msg)
-                ).add_done_callback(lambda f: consumer.commit(topic_offset))
+                    lambda: audio_processor.process_audio_files(BytesIO(response.content), track, msg)
+                ).add_done_callback(lambda f: on_complete())
 
             except Exception as err:
                 logger.error(
