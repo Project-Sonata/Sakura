@@ -20,6 +20,7 @@ cutter = AudioCutter()
 logging.getLogger().setLevel(logging.INFO)
 executor = ThreadPoolExecutor(max_workers=28, thread_name_prefix="[nino-mp3]")
 
+
 s3Uploader = S3Uploader(
     client_id=os.environ.get("aws_client_id"),
     client_secret=os.environ.get("aws_client_secret"),
@@ -47,7 +48,8 @@ producer = KafkaProducer(
 # Chain that will be called to handle the given track
 audio_processors = [
     Mp3PreviewGeneratorAudioProcessor(s3Uploader, producer),
-    TrackDurationResolverAudioProcessor(producer)]
+    TrackDurationResolverAudioProcessor(producer)
+]
 
 
 def handle_event(msg):
@@ -77,10 +79,10 @@ def handle_event(msg):
 
         for audio_processor in audio_processors:
             try:
-
+                print(len(audio_processors))
                 logger.info(f"Process the audio track: {track_uri} with {audio_processor.__str__()}")
                 executor.submit(
-                    lambda: audio_processor.process_audio_files(BytesIO(response.content), track, msg)
+                    lambda processor=audio_processor: processor.process_audio_files(BytesIO(response.content), track, msg)
                 ).add_done_callback(lambda f: on_complete())
 
             except Exception as err:
