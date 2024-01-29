@@ -1,20 +1,17 @@
+import logging as logger
 from io import BytesIO
 
 from pydub import AudioSegment
 
 from sakura.nino.AudioProcessor import AudioProcessor
-import logging as logger
+from sakura.nino.ResolvedTrackDuration import ResolvedTrackDuration
 
 
 # Resolves the track duration from track and push event to kafka
 class TrackDurationResolverAudioProcessor(AudioProcessor):
-    headers = [
-        ("event_type", bytes("track_length_resolved", encoding="UTF-8")),
-        ("content_type", bytes("application/json", encoding="UTF-8"))
-    ]
 
-    def __init__(self, kafka_producer):
-        self.kafka_producer = kafka_producer
+    def __init__(self, track_duration_collector):
+        self.track_duration_collector = track_duration_collector
 
     def process_audio_files(self, audio_file_bytes: BytesIO, track_info, event):
 
@@ -26,9 +23,8 @@ class TrackDurationResolverAudioProcessor(AudioProcessor):
 
             track_length_ms = len(segment)
 
-            body = {"album_id": album_id, "track_id": track_info.get("id"), "length_ms": track_length_ms}
-
-            self.kafka_producer.send(topic="albums-event-warehouse", value=body, headers=self.headers)
-            logger.info(f"Successfully processed the: {track_info}. Sent the response to kafka with payload: {body}")
+            track_duration_info = ResolvedTrackDuration(track_info.get("id"), track_length_ms)
+            self.track_duration_collector.on_next(track_duration=track_duration_info, album_id=album_id)
+            logger.info(f"Successfully processed the: {track_info}.")
         except Exception as err:
             logger.error(f"Error while processing the: {track_info}", err)
