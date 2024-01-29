@@ -10,6 +10,7 @@ import requests
 from kafka import KafkaConsumer, KafkaProducer, TopicPartition, OffsetAndMetadata
 
 from sakura.core.S3Uploader import S3Uploader
+from sakura.nino.KafkaBatchResolvedTrackDurationCollector import KafkaBatchResolvedTrackDurationCollector
 from sakura.nino.Mp3PreviewGeneratorAudioProcessor import Mp3PreviewGeneratorAudioProcessor
 from sakura.nino.TrackDurationResolverAudioProcessor import TrackDurationResolverAudioProcessor
 from sakura.nino.audio_cutter import AudioCutter
@@ -45,10 +46,13 @@ producer = KafkaProducer(
     bootstrap_servers=['localhost:29092'],
     value_serializer=serializer
 )
+
+track_duration_collector = KafkaBatchResolvedTrackDurationCollector(kafka_producer=producer)
+
 # Chain that will be called to handle the given track
 audio_processors = [
     Mp3PreviewGeneratorAudioProcessor(s3Uploader, producer),
-    TrackDurationResolverAudioProcessor(producer)
+    TrackDurationResolverAudioProcessor(track_duration_collector)
 ]
 
 
@@ -59,13 +63,14 @@ def handle_event(msg):
 
     event_body = msg.value.get('body', {})
     tracks = event_body.get('uploadedTracks', {}).get('items', [{}])
-
     for track in tracks:
         track_uri = track.get("uri")
 
         if track_uri is None:
             logger.warning(f"Null value in track uri. {track}")
             continue
+
+        album_id = event_body["id"]
 
         response = requests.get(track_uri)
 
@@ -75,11 +80,11 @@ def handle_event(msg):
             continue
 
         def on_complete():
+            track_duration_collector.on_complete(album_id=album_id)
             consumer.commit(topic_offset)
 
         for audio_processor in audio_processors:
             try:
-                print(len(audio_processors))
                 logger.info(f"Process the audio track: {track_uri} with {audio_processor.__str__()}")
                 executor.submit(
                     lambda processor=audio_processor: processor.process_audio_files(BytesIO(response.content), track, msg)
