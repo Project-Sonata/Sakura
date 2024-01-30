@@ -21,7 +21,6 @@ cutter = AudioCutter()
 logging.getLogger().setLevel(logging.INFO)
 executor = ThreadPoolExecutor(max_workers=28, thread_name_prefix="[nino-mp3]")
 
-
 s3Uploader = S3Uploader(
     client_id=os.environ.get("aws_client_id"),
     client_secret=os.environ.get("aws_client_secret"),
@@ -38,6 +37,7 @@ consumer = KafkaConsumer("albums-event-warehouse",
 
 
 def serializer(msg):
+    print(f"seriazling: {msg}")
     return json.dumps(msg).encode('utf-8')
 
 
@@ -62,6 +62,8 @@ def handle_event(msg):
     topic_offset = {topic_partition: offset}
 
     event_body = msg.value.get('body', {})
+    album_id = event_body["id"]
+
     tracks = event_body.get('uploadedTracks', {}).get('items', [{}])
     for track in tracks:
         track_uri = track.get("uri")
@@ -69,8 +71,6 @@ def handle_event(msg):
         if track_uri is None:
             logger.warning(f"Null value in track uri. {track}")
             continue
-
-        album_id = event_body["id"]
 
         response = requests.get(track_uri)
 
@@ -80,25 +80,24 @@ def handle_event(msg):
             continue
 
         def on_complete():
-            track_duration_collector.on_complete(album_id=album_id)
+
             consumer.commit(topic_offset)
 
         for audio_processor in audio_processors:
             try:
-                logger.info(f"Process the audio track: {track_uri} with {audio_processor.__str__()}")
-                executor.submit(
-                    lambda processor=audio_processor: processor.process_audio_files(BytesIO(response.content), track, msg)
-                ).add_done_callback(lambda f: on_complete())
-
+                audio_processor.process_audio_files(BytesIO(response.content), track, msg)
+                on_complete()
             except Exception as err:
                 logger.error(
                     f"There is a problem with processing the audio track {track},"
                     f" the problem occurred at {audio_processor}",
                     err)
+    track_duration_collector.on_complete(album_id)
 
 
 for message in consumer:
     try:
+        print(message)
         executor.submit(handle_event(message))
 
     except Exception as ex:
